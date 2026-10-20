@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>B3A 富泰邨 → 深圳灣口岸</title>
+<style>
+  :root{
+    --bg:#0b1220;
+    --card:#151f33;
+    --card2:#1b2740;
+    --fg:#eaf1ff;
+    --muted:#8ea0c0;
+    --accent:#4da3ff;
+    --accent2:#7ee0c0;
+    --warn:#ffb454;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:24px;
+    font-family:"Segoe UI","Microsoft JhengHei","PingFang HK",system-ui,-apple-system,sans-serif;
+    background:radial-gradient(1200px 800px at 20% 0%, #16233f 0%, var(--bg) 60%);
+    color:var(--fg);
+  }
+  .wrap{width:100%;max-width:560px;}
+  header{text-align:center;margin-bottom:22px;}
+  .route-badge{
+    display:inline-block;
+    background:linear-gradient(135deg,var(--accent),#2f7fe0);
+    color:#fff;font-weight:800;font-size:22px;
+    padding:6px 18px;border-radius:12px;
+    letter-spacing:1px;
+    box-shadow:0 6px 20px rgba(77,163,255,.35);
+  }
+  h1{font-size:22px;margin:14px 0 4px;font-weight:700;}
+  .sub{color:var(--muted);font-size:14px;line-height:1.6;}
+  .sub b{color:var(--fg);font-weight:600;}
+
+  .cards{display:flex;flex-direction:column;gap:12px;}
+  .card{
+    background:var(--card);
+    border:1px solid rgba(255,255,255,.06);
+    border-radius:16px;
+    padding:18px 20px;
+    display:flex;
+    align-items:center;
+    gap:18px;
+    box-shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  .card.next{
+    background:linear-gradient(135deg,#1b2b4d,#16233f);
+    border-color:rgba(126,224,192,.35);
+  }
+  .mins{
+    font-size:46px;font-weight:800;line-height:1;
+    min-width:120px;text-align:center;
+    font-variant-numeric:tabular-nums;
+  }
+  .card.next .mins{color:var(--accent2);}
+  .unit{font-size:14px;color:var(--muted);font-weight:600;}
+  .meta{flex:1;min-width:0;}
+  .eta-time{font-size:18px;font-weight:700;}
+  .eta-time .ap{font-size:12px;color:var(--muted);margin-left:4px;}
+  .dest{font-size:13px;color:var(--muted);margin-top:2px;}
+  .tag{
+    font-size:12px;font-weight:700;color:#0b1220;
+    background:var(--accent2);border-radius:999px;padding:3px 10px;
+    display:inline-block;margin-bottom:6px;
+  }
+  .empty,.error{
+    text-align:center;padding:40px 20px;border-radius:16px;
+    background:var(--card);border:1px solid rgba(255,255,255,.06);color:var(--muted);
+  }
+  .error{color:#ff9a9a;}
+  footer{
+    margin-top:22px;text-align:center;color:var(--muted);font-size:12.5px;
+  }
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;
+    background:var(--accent2);margin-right:6px;animation:pulse 1.6s infinite;}
+  @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+  .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--muted);
+    border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;
+    vertical-align:middle;margin-right:8px;}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <span class="route-badge">B3A</span>
+      <h1>富泰邨 → 深圳灣口岸</h1>
+      <div class="sub">
+        <b>Fu Tai Estate</b> → <b>Shenzhen Bay Port</b><br>
+        城巴 Citybus · 資料來自 DATA.GOV.HK
+      </div>
+    </header>
+
+    <main class="cards" id="list">
+      <div class="empty"><span class="spinner"></span>正在載入Next Bus資料…</div>
+    </main>
+
+    <footer>
+      <span class="dot"></span>每 30 秒自動更新 · <span id="updated">—</span>
+      · 下次更新 <span id="countdown">30</span>s
+    </footer>
+  </div>
+
+<script>
+(function(){
+  // Citybus / DATA.GOV.HK real-time ETA API
+  const API = 'https://rt.data.gov.hk/v1/transport/citybus-nwfb/eta/CTB/003261/B3A';
+  const ROUTE = 'B3A';
+  const DEST_EN = 'Shenzhen Bay Port';
+  const REFRESH_MS = 30000;   // refresh every 30 seconds
+  const NEXT_DIR = 'O';       // outbound = Fu Tai Estate -> Shenzhen Bay Port
+
+  const listEl   = document.getElementById('list');
+  const updEl    = document.getElementById('updated');
+  const countEl  = document.getElementById('countdown');
+
+  function fmtClock(iso){
+    const d = new Date(iso);
+    let h = d.getHours(), m = d.getMinutes();
+    const ap = h >= 12 ? 'PM' : 'AM';
+    h = h % 12; if(h === 0) h = 12;
+    return { t: h + ':' + String(m).padStart(2,'0'), ap };
+  }
+
+  function render(entries, generated){
+    const now = Date.now();
+
+    // Only show buses heading to Shenzhen Bay Port (outbound)
+    let buses = entries
+      .filter(e => e.dir === NEXT_DIR)
+      .map(e => ({
+        eta: new Date(e.eta),
+        dest: e.dest_en,
+        remark: (e.rmk_en || e.rmk_tc || '').trim()
+      }))
+      .sort((a,b) => a.eta - b.eta);
+
+    // Drop buses that have already departed (more than ~30s in the past)
+    buses = buses.filter(b => (b.eta.getTime() - now) > -30000);
+
+    if(!buses.length){
+      listEl.innerHTML =
+        '<div class="empty">暫未有下一班 B3A 往深圳灣口岸<br>' +
+        '<span style="font-size:12px">No next bus available · 請稍後再試</span></div>';
+    } else {
+      listEl.innerHTML = buses.slice(0,3).map((b, i) => {
+        const diff = Math.round((b.eta.getTime() - now) / 60000);
+        const c = fmtClock(b.eta.toISOString());
+        const big = diff <= 0 ? '即將到達' : (diff + ' <span class="unit">分鐘</span>');
+        const bigCls = diff <= 0 ? 'mins arriving' : 'mins';
+        const tag = i === 0 ? '<span class="tag">下一班 Next</span>' : '';
+        const remark = b.remark ? '<div class="dest">' + b.remark + '</div>' : '';
+        return '<div class="card' + (i === 0 ? ' next' : '') + '">' +
+                 '<div class="' + bigCls + '">' + big + '</div>' +
+                 '<div class="meta">' + tag +
+                   '<div class="eta-time">' + c.t + '<span class="ap">' + c.ap + '</span></div>' +
+                   '<div class="dest">往 ' + (b.dest || DEST_EN) + '</div>' +
+                   remark +
+                 '</div>' +
+               '</div>';
+      }).join('');
+    }
+
+    const g = generated ? new Date(generated) : new Date();
+    updEl.textContent = '更新於 ' + fmtClock(g.toISOString()).t + fmtClock(g.toISOString()).ap;
+  }
+
+  async function load(){
+    listEl.innerHTML = '<div class="empty"><span class="spinner"></span>正在更新…</div>';
+    try{
+      const res = await fetch(API, { cache: 'no-store' });
+      if(!res.ok) throw new Error('HTTP ' + res.status);
+      const json = await res.json();
+      render(json.data || [], json.generated_timestamp);
+    }catch(err){
+      listEl.innerHTML =
+        '<div class="error">無法取得Next Bus資料<br>' +
+        '<span style="font-size:12px">' + err.message + '</span><br>' +
+        '<span style="font-size:12px">會於 30 秒後重試</span></div>';
+    }finally{
+      restartCountdown();
+    }
+  }
+
+  // 30-second countdown display
+  let remain = 30, timer = null;
+  function restartCountdown(){
+    remain = REFRESH_MS / 1000;
+    countEl.textContent = remain;
+    if(timer) clearInterval(timer);
+    timer = setInterval(() => {
+      remain--;
+      if(remain <= 0){ load(); }
+      else { countEl.textContent = remain; }
+    }, 1000);
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>
