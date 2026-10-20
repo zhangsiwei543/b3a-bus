@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>B3A 富泰邨 → 深圳灣口岸</title>
+<meta name="theme-color" content="#0b1220">
+<title>B3A 富泰邨 ⇄ 深圳灣口岸</title>
 <style>
   :root{
     --bg:#0b1220;
@@ -28,7 +29,7 @@
     color:var(--fg);
   }
   .wrap{width:100%;max-width:560px;}
-  header{text-align:center;margin-bottom:22px;}
+  header{text-align:center;margin-bottom:18px;}
   .route-badge{
     display:inline-block;
     background:linear-gradient(135deg,var(--accent),#2f7fe0);
@@ -40,6 +41,28 @@
   h1{font-size:22px;margin:14px 0 4px;font-weight:700;}
   .sub{color:var(--muted);font-size:14px;line-height:1.6;}
   .sub b{color:var(--fg);font-weight:600;}
+
+  .tabs{
+    display:flex;gap:6px;margin-bottom:14px;
+    background:var(--card);border:1px solid rgba(255,255,255,.06);
+    border-radius:14px;padding:6px;
+  }
+  .tabs button{
+    flex:1;appearance:none;border:0;background:transparent;
+    color:var(--muted);font:inherit;font-weight:700;font-size:14px;
+    padding:11px 8px;border-radius:10px;cursor:pointer;
+    transition:background .18s ease,color .18s ease,box-shadow .18s ease;
+    white-space:nowrap;
+  }
+  .tabs button:hover{color:var(--fg);}
+  .tabs button[aria-selected="true"]{
+    background:linear-gradient(135deg,var(--accent),#2f7fe0);
+    color:#fff;box-shadow:0 4px 14px rgba(77,163,255,.35);
+  }
+  .stop-note{
+    text-align:center;color:var(--muted);font-size:12.5px;
+    margin:-4px 0 12px;
+  }
 
   .cards{display:flex;flex-direction:column;gap:12px;}
   .card{
@@ -62,6 +85,7 @@
     font-variant-numeric:tabular-nums;
   }
   .card.next .mins{color:var(--accent2);}
+  .mins.arriving{font-size:26px;}
   .unit{font-size:14px;color:var(--muted);font-weight:600;}
   .meta{flex:1;min-width:0;}
   .eta-time{font-size:18px;font-weight:700;}
@@ -93,14 +117,20 @@
   <div class="wrap">
     <header>
       <span class="route-badge">B3A</span>
-      <h1>富泰邨 → 深圳灣口岸</h1>
+      <h1>富泰邨 ⇄ 深圳灣口岸</h1>
       <div class="sub">
-        <b>Fu Tai Estate</b> → <b>Shenzhen Bay Port</b><br>
+        <b>Fu Tai Estate</b> ⇄ <b>Shenzhen Bay Port</b><br>
         城巴 Citybus · 資料來自 DATA.GOV.HK
       </div>
     </header>
 
-    <main class="cards" id="list">
+    <div class="tabs" role="tablist" aria-label="方向">
+      <button type="button" role="tab" data-dir="toPort" aria-selected="true">往深圳灣口岸</button>
+      <button type="button" role="tab" data-dir="toFuTai" aria-selected="false">往富泰</button>
+    </div>
+    <div class="stop-note" id="stopNote">富泰邨 · 青山公路</div>
+
+    <main class="cards" id="list" role="tabpanel">
       <div class="empty"><span class="spinner"></span>正在載入Next Bus資料…</div>
     </main>
 
@@ -112,16 +142,30 @@
 
 <script>
 (function(){
-  // Citybus / DATA.GOV.HK real-time ETA API
-  const API = 'https://rt.data.gov.hk/v1/transport/citybus-nwfb/eta/CTB/003261/B3A';
+  // Citybus / DATA.GOV.HK real-time ETA API (per stop, split by direction)
+  const API  = 'https://rt.data.gov.hk/v1/transport/citybus-nwfb/eta/CTB';
   const ROUTE = 'B3A';
-  const DEST_EN = 'Shenzhen Bay Port';
   const REFRESH_MS = 30000;   // refresh every 30 seconds
-  const NEXT_DIR = 'O';       // outbound = Fu Tai Estate -> Shenzhen Bay Port
 
-  const listEl   = document.getElementById('list');
-  const updEl    = document.getElementById('updated');
-  const countEl  = document.getElementById('countdown');
+  // Stop 003261 = 富泰邨 (outbound, bus toward the port)
+  // Stop 003208 = 深圳灣口岸 (inbound, bus back toward Fu Tai / Shan King)
+  const DIRS = {
+    toPort:  { stop:'003261', dir:'O', note:'富泰邨 · 青山公路',
+               dest:'往 Shenzhen Bay Port', empty:'暫未有下一班 B3A 往深圳灣口岸' },
+    toFuTai: { stop:'003208', dir:'I', note:'深圳灣口岸',
+               dest:'往 富泰 Fu Tai Estate', empty:'暫未有下一班 B3A 往富泰' }
+  };
+
+  const listEl  = document.getElementById('list');
+  const updEl   = document.getElementById('updated');
+  const countEl = document.getElementById('countdown');
+  const noteEl  = document.getElementById('stopNote');
+
+  // Per-direction state so one failing feed never blanks the other
+  const state = {};
+  Object.keys(DIRS).forEach(k => { state[k] = { buses:null, error:null, at:null }; });
+
+  let active = location.hash === '#toFuTai' ? 'toFuTai' : 'toPort';
 
   function fmtClock(iso){
     const d = new Date(iso);
@@ -131,70 +175,113 @@
     return { t: h + ':' + String(m).padStart(2,'0'), ap };
   }
 
-  function render(entries, generated){
-    const now = Date.now();
+  function esc(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+      ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
 
-    // Only show buses heading to Shenzhen Bay Port (outbound)
-    let buses = entries
-      .filter(e => e.dir === NEXT_DIR)
-      .map(e => ({
-        eta: new Date(e.eta),
-        dest: e.dest_en,
-        remark: (e.rmk_en || e.rmk_tc || '').trim()
-      }))
-      .sort((a,b) => a.eta - b.eta);
+  function render(){
+    const cfg = DIRS[active];
+    const s   = state[active];
+    noteEl.textContent = cfg.note;
 
-    // Drop buses that have already departed (more than ~30s in the past)
-    buses = buses.filter(b => (b.eta.getTime() - now) > -30000);
-
-    if(!buses.length){
+    if(s.error){
       listEl.innerHTML =
-        '<div class="empty">暫未有下一班 B3A 往深圳灣口岸<br>' +
-        '<span style="font-size:12px">No next bus available · 請稍後再試</span></div>';
-    } else {
-      listEl.innerHTML = buses.slice(0,3).map((b, i) => {
-        const diff = Math.round((b.eta.getTime() - now) / 60000);
-        const c = fmtClock(b.eta.toISOString());
-        const big = diff <= 0 ? '即將到達' : (diff + ' <span class="unit">分鐘</span>');
-        const bigCls = diff <= 0 ? 'mins arriving' : 'mins';
-        const tag = i === 0 ? '<span class="tag">下一班 Next</span>' : '';
-        const remark = b.remark ? '<div class="dest">' + b.remark + '</div>' : '';
-        return '<div class="card' + (i === 0 ? ' next' : '') + '">' +
-                 '<div class="' + bigCls + '">' + big + '</div>' +
-                 '<div class="meta">' + tag +
-                   '<div class="eta-time">' + c.t + '<span class="ap">' + c.ap + '</span></div>' +
-                   '<div class="dest">往 ' + (b.dest || DEST_EN) + '</div>' +
-                   remark +
-                 '</div>' +
-               '</div>';
-      }).join('');
+        '<div class="error">無法取得Next Bus資料<br>' +
+        '<span style="font-size:12px">' + esc(s.error) + '</span><br>' +
+        '<span style="font-size:12px">會於 30 秒後重試</span></div>';
+      return;
     }
 
-    const g = generated ? new Date(generated) : new Date();
-    updEl.textContent = '更新於 ' + fmtClock(g.toISOString()).t + fmtClock(g.toISOString()).ap;
+    if(!s.buses){
+      listEl.innerHTML = '<div class="empty"><span class="spinner"></span>正在更新…</div>';
+      return;
+    }
+
+    if(!s.buses.length){
+      listEl.innerHTML =
+        '<div class="empty">' + cfg.empty + '<br>' +
+        '<span style="font-size:12px">No next bus available · 請稍後再試</span></div>';
+      return;
+    }
+
+    const now = Date.now();
+    listEl.innerHTML = s.buses.slice(0,3).map((b, i) => {
+      const diff = Math.round((b.eta.getTime() - now) / 60000);
+      const c = fmtClock(b.eta.toISOString());
+      const big = diff <= 0 ? '即將到達' : (diff + ' <span class="unit">分鐘</span>');
+      const bigCls = diff <= 0 ? 'mins arriving' : 'mins';
+      const tag = i === 0 ? '<span class="tag">下一班 Next</span>' : '';
+      const remark = b.remark ? '<div class="dest">' + esc(b.remark) + '</div>' : '';
+      return '<div class="card' + (i === 0 ? ' next' : '') + '">' +
+               '<div class="' + bigCls + '">' + big + '</div>' +
+               '<div class="meta">' + tag +
+                 '<div class="eta-time">' + c.t + '<span class="ap">' + c.ap + '</span></div>' +
+                 '<div class="dest">' + cfg.dest + '</div>' +
+                 remark +
+               '</div>' +
+             '</div>';
+    }).join('');
+
+    if(s.at){
+      const g = fmtClock(s.at.toISOString());
+      updEl.textContent = '更新於 ' + g.t + g.ap;
+    }
+  }
+
+  async function fetchDir(key){
+    const cfg = DIRS[key], s = state[key];
+    try{
+      const res = await fetch(API + '/' + cfg.stop + '/' + ROUTE, { cache:'no-store' });
+      if(!res.ok) throw new Error('HTTP ' + res.status);
+      const json = await res.json();
+      const now = Date.now();
+
+      let buses = (json.data || [])
+        .filter(e => e.dir === cfg.dir)
+        .map(e => ({ eta:new Date(e.eta), remark:(e.rmk_tc || e.rmk_en || '').trim() }))
+        .sort((a,b) => a.eta - b.eta);
+
+      // Drop buses that have already departed (more than ~30s in the past)
+      buses = buses.filter(b => (b.eta.getTime() - now) > -30000);
+
+      s.buses = buses;
+      s.error = null;
+      s.at = new Date();
+    }catch(err){
+      s.buses = null;
+      s.error = err.message;
+      s.at = new Date();
+    }
   }
 
   async function load(){
     listEl.innerHTML = '<div class="empty"><span class="spinner"></span>正在更新…</div>';
-    try{
-      const res = await fetch(API, { cache: 'no-store' });
-      if(!res.ok) throw new Error('HTTP ' + res.status);
-      const json = await res.json();
-      render(json.data || [], json.generated_timestamp);
-    }catch(err){
-      listEl.innerHTML =
-        '<div class="error">無法取得Next Bus資料<br>' +
-        '<span style="font-size:12px">' + err.message + '</span><br>' +
-        '<span style="font-size:12px">會於 30 秒後重試</span></div>';
-    }finally{
-      restartCountdown();
-    }
+    await Promise.all(Object.keys(DIRS).map(fetchDir));
+    render();
+    restartCountdown();
   }
 
+  function setActive(key, updateUrl){
+    active = key;
+    document.querySelectorAll('.tabs button').forEach(b => {
+      b.setAttribute('aria-selected', String(b.dataset.dir === key));
+    });
+    if(updateUrl){
+      const url = location.pathname + location.search + (key === 'toFuTai' ? '#toFuTai' : '');
+      history.replaceState(null, '', url);
+    }
+    render();
+  }
+
+  document.querySelectorAll('.tabs button').forEach(b => {
+    b.addEventListener('click', () => setActive(b.dataset.dir, true));
+  });
+
   // 30-second countdown display
-  let remain = 30, timer = null;
+  let timer = null;
   function restartCountdown(){
-    remain = REFRESH_MS / 1000;
+    let remain = REFRESH_MS / 1000;
     countEl.textContent = remain;
     if(timer) clearInterval(timer);
     timer = setInterval(() => {
@@ -204,6 +291,7 @@
     }, 1000);
   }
 
+  setActive(active, false);
   load();
 })();
 </script>
